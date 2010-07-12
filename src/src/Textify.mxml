@@ -5,4 +5,10 @@
 	<fx:Declarations>
 		<!-- Place non-visual elements (e.g., services, value objects) here -->
 	</fx:Declarations>
+	<fx:Script source="textify.as" />
+	<s:TextArea id="main_text_area" y="7" x="191" right="0" left="191" bottom="0" top="0" />
+	<s:TextArea x="10" y="10" width="173" height="23" id="search_box" text="Search..." editable="true" enabled="true" change="search()" />
+	<s:List x="0" y="41" width="192" height="581"></s:List>
+	<s:Button x="10" y="52" label="Write to File" width="173" enabled="true" click="write_to_file()"/>
+	<s:Button x="10" y="81" label="Read from File" width="173" enabled="true" click="read_from_file()"/>
 </s:WindowedApplication>
