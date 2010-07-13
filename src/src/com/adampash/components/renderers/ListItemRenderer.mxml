@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- jumping off point can be found here: http://www.dgrigg.com/samples/listandscrollbar/srcview/index.html -->
+<s:ItemRenderer xmlns:fx="http://ns.adobe.com/mxml/2009" 
+				xmlns:s="library://ns.adobe.com/flex/spark" 
+				xmlns:mx="library://ns.adobe.com/flex/mx" 
+				autoDrawBackground="false" height="85" width="385">
+	<fx:Script>
+		<![CDATA[
+			
+			override public function set data(value:Object):void 
+			{
+				super.data = value;
+				
+				if (value)
+				{
+					titleLbl.text = data.title;
+					contentLbl.text = data.text;
+					titleLbl.visible = true;
+					contentLbl.visible = true;
+				}
+				else
+				{
+					titleLbl.text = "";
+					contentLbl.text = "";
+					titleLbl.visible = false;
+					contentLbl.visible = false;
+				}
+				
+			}
+		]]>
+	</fx:Script>
+	<s:states>
+		<s:State name="normal" />
+		<s:State name="hovered" />
+		<s:State name="selected" />
+	</s:states>
+	
+	<s:Rect left="0" right="0" top="0" bottom="0">
+		<s:fill>
+			<s:SolidColor color.selected="0x383c40" color.normal="0x23252a" color.hovered="0x383c40"
+						  alpha.selected="0.8" alpha.hovered="0.5" alpha.normal="0.8" />
+		</s:fill>
+	</s:Rect>
+	
+	<s:Label id="titleLbl" 
+			 x="15" y="15" 
+			 width="370" color="0xffffff"/>
+	
+	<s:Label id="contentLbl" 
+			 x="15" y="30" 
+			 width="370" height="30" 
+			 fontSize="11" color="0xeeeeee"  />
+		
+	<s:Line left="0" right="0" bottom="0" width="1">
+		<s:stroke>
+			<s:SolidColorStroke color="0x000000"/>
+		</s:stroke>
+	</s:Line>
+	
+</s:ItemRenderer>
