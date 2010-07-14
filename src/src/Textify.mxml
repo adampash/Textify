@@ -7,18 +7,22 @@
 		<!-- Place non-visual elements (e.g., services, value objects) here -->
 	</fx:Declarations>
 	<fx:Script source="textify.as" />
-	<s:TextArea id="main_text_area" right="0" left="191" bottom="0" top="56"  paddingLeft="10" focusColor="#CCCCCC" color="#000000" fontStyle="normal"/>
+	<s:TextArea id="main_text_area" right="0" left="191" bottom="0" top="56"  
+				paddingLeft="10" focusColor="#CCCCCC" color="#000000" fontStyle="normal"
+				change="word_count()" />
 	<!--
 	<s:TextArea x="10" y="10" width="173" height="23" id="search_box" text="Search..." editable="true" enabled="true" change="search()" focusIn="search_focused()" focusOut="search_blurred()" />
 	-->
 	<s:TextInput x="10" y="10" width="173" height="23" id="search_box" text="Search..." editable="true" enabled="true" change="search()" focusIn="search_focused()" focusOut="search_blurred()" enter="activate_note_or_create_new()"  chromeColor="#CCCCCC" focusColor="#CCCCCC" fontStyle="italic" color="#BEBDBD"/>
 	
-	<s:List id="note_list" x="0" y="41" width="183" height="581" click="read_from_file(note_list.selectedItem)"></s:List>
-	<s:Label id="note_title" left="191" y="0" right="165" text="" height="48" fontSize="24" fontFamily="Verdana" paddingLeft="10" paddingTop="10"/>
+	<s:Label x="917" y="32" width="95" height="16" id="note_word_count" right="5" textAlign="right" fontStyle="italic" />
+	<s:Label id="note_title" left="191" y="0" right="165" text="" height="48" fontSize="24" fontFamily="Verdana" 
+			 paddingLeft="10" paddingTop="10" lineBreak="explicit" />
 	<!--
 	<s:Button x="10" y="227" label="Write to File" width="173" enabled="true" click="write_to_file(active_title, main_text_area.text)"/>
 	<s:Button x="10" y="256" label="Read from File" width="173" enabled="true" click="read_from_file('This File')"/>
 	-->
 	<s:List id="rich_note_list" x="0" y="41" width="183" height="581"
 			itemRenderer="com.adampash.components.renderers.ListItemRenderer" click="read_from_file(rich_note_list.selectedItem.title)"></s:List>
+	<s:List id="note_list" x="0" top="41" width="183" bottom="0" click="read_from_file(note_list.selectedItem)"></s:List>
 </s:WindowedApplication>
