@@ -10,12 +10,14 @@ import flash.filesystem.FileStream;
 import mx.collections.ArrayList;
 import mx.controls.Alert;
 import mx.controls.List;
+import mx.events.CloseEvent;
 
 private var active_title:String = "This File";
 private var search_focus:Boolean = false;		// this boolean indicates whether search has focus
 private var title_array:Array = new Array();	// this array contains only note titles
 private var rich_array:Array = new Array(); 	// this array contains note title, text, and modified date
-private var back_pressed:Boolean = false;
+private var query_length:int = 0;
+		
 
 private function create_new_file(title:String):void {
 	
@@ -52,10 +54,11 @@ private function read_from_file(title:String):void {
 		var txt:String = fs.readUTFBytes(fs.bytesAvailable);
 		fs.close();
 		main_text_area.text = txt;
-		main_text_area.setFocus();
+		//main_text_area.setFocus();
 	}
 	else {
 		write_to_file(title, '');
+		add_note_to_array();
 	}
 	search_box.text = title;
 	note_title.text = title;
@@ -67,8 +70,46 @@ private function read_from_file(title:String):void {
 
 // this method deletes the currently active file
 private function delete_note():void {
-	Alert.show('Delete the note named "' + active_title + '"?', "Note delete");
+	if (note_list.selectedIndex == -1) {
+		return; // do nothing if no note is selected
+	}
+	search_box.text = active_title;
+	search_box.selectRange(query_length, search_box.text.length);
+	Alert.show('Delete the note named "' + active_title + '"?', "Note delete", Alert.YES|Alert.NO, this, confirm_delete, null, Alert.YES);
 	// need to finish this functionality
+}
+
+private function confirm_delete(event:CloseEvent):void {
+	if (event.detail == Alert.YES) {
+		var file_name:String = search_box.text + ".txt"; 
+		var file:File = File.desktopDirectory.resolvePath("Notes/" + file_name);
+		if (file.exists) {
+			trace ("Exists... deleting");
+			file.deleteFile();
+			remove_note_from_array();
+		}
+	} 
+}
+
+// the following two functions will add/remove notes to/from the array(s) as
+// notes are created or deleted
+private function add_note_to_array():void {
+	// add a new item to the top of the list (goes to top because it's sorted by last modified)
+	title_array.unshift(active_title);
+	var current_list:Array = note_list.dataProvider.toArray();
+	current_list.unshift(active_title);
+	note_list.dataProvider = new ArrayList(current_list);	
+}
+
+private function remove_note_from_array():void {
+	// remove item from array
+	title_array.splice(title_array.indexOf(active_title), 1);
+	var current_list:Array = note_list.dataProvider.toArray();
+	current_list.splice(note_list.selectedIndex, 1);
+	note_list.dataProvider = new ArrayList(current_list);
+	note_title.text = '';
+	search_box.text = '';
+	main_text_area.text = '';
 }
 
 // this method searches titles and text for keywords
@@ -89,24 +130,33 @@ private function search():void {
 				note_list.selectedIndex = -1; // for some reason I have to set the index to -1 (nothing selected) or reselecting an already selected index will toggle its selection; annoying!
 				note_list.selectedIndex = i;	
 				search_box.text = note_list.selectedItem;
+				active_title = search_box.text;
 				search_box.selectRange(query.length, search_box.text.length);
 				note_list.selectedIndex = i;
+				read_from_file(search_box.text);
+				// todo: highlight matching words inside note
 				break;
 			}
 		}		
 	}
-	
-/*	if (!back_pressed && this_array.length != 0 && query.length > 0 && note_list.dataProvider.getItemAt(0).toLowerCase().indexOf(query) == 0) {
-		note_list.selectedIndex = 0;
-		search_box.text = note_list.selectedItem;
-		search_box.selectRange(query.length, search_box.text.length);
-	}
-*/
+	query_length = query.length;
 }
 
 // this function runs on each item in the note_list array to check that if it matches the query
+// if the item matches, it's returned
 private function check_indexOf_query(element:*, index:int, arr:Array):Boolean {
-	return (element.toLowerCase().indexOf(search_box.text.toLowerCase()) != -1);
+	var words:Array = search_box.text.toLowerCase().split(" ");
+	var match:Boolean = true;
+	for (var i:uint = 0; i < words.length; i++) {
+		if (element.toLowerCase().indexOf(words[i]) != -1) {
+			match = true;
+		}
+		else {
+			match = false;
+			break;
+		}
+	}
+	return match;
 }
 
 // the following two functions select next and previous search results in the note list display
@@ -114,6 +164,7 @@ private function select_next_note():void {
 	if (note_list.selectedIndex != (note_list.dataProvider.length - 1)) {
 		note_list.selectedIndex += 1;
 		search_box.text = note_list.selectedItem;
+		read_from_file(search_box.text);
 	}
 	search_box.selectAll();
 }
@@ -122,6 +173,7 @@ private function select_previous_note():void {
 	if (note_list.selectedIndex != 0) {
 		note_list.selectedIndex -= 1;
 		search_box.text = note_list.selectedItem;
+		read_from_file(search_box.text);
 	}
 	search_box.selectAll();
 }
@@ -132,17 +184,12 @@ private function select_previous_note():void {
 private function activate_note_or_create_new():void {
 	// clear whatever's currently in the main text area in preparation for the new note
 	main_text_area.text = '';
-	var new_note:Boolean = false;
 	active_title = search_box.text;
-	if (new_note) {
-		// create a new note/file with the given title and no content
-		write_to_file(active_title, '');
-	}
-	else {
-		// if it's an existing file, read from the existing file
-		read_from_file(search_box.text);
-	}
+	read_from_file(search_box.text);
 	main_text_area.setFocus();
+	if (note_list.selectedIndex == -1) {
+		note_list.selectedIndex = 0;	
+	}
 }
 
 // this method is called when a file is written; it may display some sort of
@@ -228,7 +275,7 @@ private function setup():void {
 	rich_array = rich_array.sortOn("sort_date", Array.DESCENDING);
 	title_array = [];
 	for (var k:uint = 0; k < rich_array.length; k++) {
-		title_array.push(rich_array[k].title);
+		title_array.push(rich_array[k].title); //+ rich_array[k].text);
 		trace (rich_array[k].title);
 	}
 	var convert_list:ArrayList = new ArrayList(title_array);
@@ -249,17 +296,18 @@ private function onKeyDown(event:KeyboardEvent):void
 		event.preventDefault();
 		write_to_file(active_title, main_text_area.text);
 	}
-	if (kc == 8 && event.ctrlKey) {
+	if (kc == 8 && event.ctrlKey) {			// ctrl/cmd+delete (Delete)
+		event.preventDefault();
 		delete_note();
 	}
-	if (kc == 27) {
+	if (kc == 27) {							// Escape key
 		search_box.text = '';
 		search_box.setFocus();
 		// clear main_text_area
 		search();
 	}
 	// implent Cmd/Ctrl+Del to delete a note (with confirmation
-	if (search_focus == true) {
+	if (search_focus == true && !event.ctrlKey) {
 		if (kc == 40) {						// down arrow
 			event.preventDefault();
 			select_next_note();
@@ -269,14 +317,10 @@ private function onKeyDown(event:KeyboardEvent):void
 			select_previous_note();					
 		}
 		if (kc == 8) {
-			back_pressed = true;
 			if (search_box.selectionActivePosition != search_box.selectionAnchorPosition) {
 				search_box.text = search_box.text.slice(0, search_box.selectionAnchorPosition);
 				search_box.selectRange(search_box.text.length, search_box.text.length);
 			}
-		}
-		else {
-			back_pressed = false;
 		}
 	}
 }

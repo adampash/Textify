@@ -24,5 +24,5 @@
 	-->
 	<s:List id="rich_note_list" x="0" y="41" width="183" height="581"
 			itemRenderer="com.adampash.components.renderers.ListItemRenderer" click="read_from_file(rich_note_list.selectedItem.title)"></s:List>
-	<s:List id="note_list" x="0" top="41" width="183" bottom="0" click="read_from_file(note_list.selectedItem)"></s:List>
+	<s:List id="note_list" x="0" top="41" width="183" bottom="0" click="read_from_file(note_list.selectedItem); main_text_area.setFocus();"></s:List>
 </s:WindowedApplication>
