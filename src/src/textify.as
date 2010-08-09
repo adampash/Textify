@@ -1,3 +1,4 @@
+import com.adampash.components.loaders.URLURLLoader;
 import com.adampash.components.renderers.ListItemRenderer;
 import com.adobe.serialization.json.JSON;
 
@@ -24,11 +25,14 @@ import mx.messaging.channels.StreamingAMFChannel;
 import mx.utils.Base64Encoder;
 
 private var active_title:String = "";
+private var active_key:String = "";				// carries the unique Simplenote key of the active note (how will this work for notes not on Simplenote?)
 private var search_focus:Boolean = false;		// this boolean indicates whether search has focus
 private var title_array:Array = new Array();	// this array contains only note titles
-private var title_and_text_array:Array = new Array(); 	// this contains only note title and text
+private var full_text_array:Array = new Array(); 	// this contains only note title and text
 private var filtered_notes_array:Array = new Array(); 	// contains filtered versions of the title_array
 private var rich_array:Array = new Array(); 	// this array contains note title, text, and modified date
+private var db_array:Array = new Array();		// contains everything pulled from the database on any refresh_notes() SELECT
+private var match_indexes:Array = [];	// contains all the absolute indexes of the matched items in the filtered list set
 private var query_length:int = 0;				// 
 private var explicit_query:String = ''; 		// contains the text the user has explicitly typed into the search box rather than what's been autocompleted
 private var last_explicit_query:String = '';	// contains the previous query text; set from explicit_query
@@ -59,8 +63,8 @@ private function refresh_note_arrays(note_index:int, title:String, file_text:Str
 	trace('refresh_note_arrays');
 	title_array.splice(note_index, 1);
 	title_array.unshift(title);
-	title_and_text_array.splice(note_index, 1);
-	title_and_text_array.unshift(title + " " + file_text);
+	full_text_array.splice(note_index, 1);
+	full_text_array.unshift(title + " " + file_text);
 }
 
 // need to figure out how to capture file written event from write_to_file
@@ -87,7 +91,8 @@ private function read_from_file(title:String):void {
 			write_to_file(title, '');
 			note_list.selectedIndex = 0;
 			active_title = title;
-			create_new_note();
+			trace("Would normally create new note here; currently commented out.");
+			//create_new_note();
 		}
 	}
 	search_box.text = title;
@@ -99,9 +104,15 @@ private function read_from_file(title:String):void {
 	word_count();
 }
 
+// currently not in use
+private function display_note():void {
+	set_title_and_text(note_list.selectedItem);
+}
+
 // this method deletes the currently active file
 private function delete_note():void {
 	trace('delete_note');
+	var note:Object = note_list.selectedItem;
 	var note_list_index:uint = note_list.selectedIndex;
 	if (note_list.selectedIndex == -1) {
 		trace('no note is selected');
@@ -109,12 +120,24 @@ private function delete_note():void {
 	}
 	search_box.text = last_explicit_query;		// this and the next line are kludgy, but currently the workaround because event.preventDefault() isn't working for cmd/ctrl+delete
 	search();									
-	Alert.show('Delete the note named "' + active_title + '"?', "Note delete", Alert.YES|Alert.NO, this, confirm_delete, null, Alert.YES);
+	Alert.show('Delete the note named "' + note.title + '"?', "Note delete", Alert.YES|Alert.NO, this, confirm_delete, null, Alert.YES);
 }
 
 private function confirm_delete(event:CloseEvent):void {
 	trace('confirm_delete');
 	if (event.detail == Alert.YES) {
+		var temp_sqls:SQLStatement = new SQLStatement();
+		temp_sqls.sqlConnection = sqlc;
+		temp_sqls.text = "UPDATE notes SET deleted = '1' WHERE key = '" + active_key + "';";
+		temp_sqls.execute();
+		var result:Array = temp_sqls.getResult().data;
+		var url:String = "https://simple-note.appspot.com/api/delete?key=" + active_key;
+		var request:URLRequest = new URLRequest(url);
+		var url_loader:URLLoader = new URLLoader();
+		url_loader.addEventListener(Event.COMPLETE, simplenote_marked_as_deleted);
+		url_loader.load(request);
+		refresh_notes();
+		/*
 		var file_name:String = search_box.text + ".txt"; 
 		var file:File = File.desktopDirectory.resolvePath("Notes/" + file_name);
 		if (file.exists) {
@@ -123,7 +146,12 @@ private function confirm_delete(event:CloseEvent):void {
 			remove_note_from_array();
 			clear_search();
 		}
+		*/
 	} 
+}
+
+private function simplenote_marked_as_deleted(e:Event):void {
+	trace("Note with key " + e.target.data + " was marked as deleted on the Simplenote server.");
 }
 
 // the following two functions will add/remove notes to/from the array(s) as
@@ -134,7 +162,7 @@ private function add_note_to_array():void {
 	trace("Note title: " + active_title);
 	note_list.dataProvider.addItemAt(active_title, 0);
 	title_array.unshift(active_title);
-	title_and_text_array.unshift(active_title);
+	full_text_array.unshift(active_title);
 }
 
 private function remove_note_from_array():void {
@@ -142,7 +170,7 @@ private function remove_note_from_array():void {
 	trace('remove_note_from_array');
 	var remove_index:uint = title_array.indexOf(active_title);
 	title_array.splice(remove_index, 1);
-	title_and_text_array.splice(remove_index, 1);
+	full_text_array.splice(remove_index, 1);
 	note_title.text = '';
 	search_box.text = '';
 	main_text_area.text = '';
@@ -160,27 +188,29 @@ private function search():void {
 	//filtered_notes_array = title_array.filter(filter_by_query);
 	filtered_notes_array = [];
 	var query_words:Array = search_box.text.toLowerCase().split(" ");
-	for (var j:uint = 0; j < title_and_text_array.length; j++) {
-		if (has_a_match(title_and_text_array[j], query_words)) {
-			filtered_notes_array.push(title_array[j]);
+	match_indexes = [];
+	for (var j:uint = 0; j < db_array.length; j++) {
+		if (has_a_match(db_array[j].text, query_words)) {
+			filtered_notes_array.push(db_array[j]);
+			match_indexes.push(j);
 		}
 	}
 	note_list.dataProvider = new ArrayList(filtered_notes_array);
-	trace (filtered_notes_array);
 	// this block selects the first matching title name if the query
 	// string matches the beginning of the title; the loop breaks as soon
 	// as a match is found
 	if (query.length > 0 && filtered_notes_array.length != 0) {
 		for (var i:uint = 0; i < filtered_notes_array.length; i++) {
-			if (filtered_notes_array[i].toString().toLowerCase().indexOf(query) == 0) {
+			if (filtered_notes_array[i].title.toString().toLowerCase().indexOf(query) == 0) {
 				note_list.selectedIndex = -1; // for some reason I have to set the index to -1 (nothing selected) or reselecting an already selected index will toggle its selection; annoying!
 				note_list.selectedIndex = i;	
-				search_box.text = search_box.text + note_list.selectedItem.substring(query.length);
+				search_box.text = search_box.text + note_list.selectedItem.title.substring(query.length);
 				active_title = search_box.text;
 				search_box.selectRange(query.length, search_box.text.length);
 				note_list.selectedIndex = i;
 				if (search_box.text.toLowerCase() != note_title.text.toLowerCase()) {
-					read_from_file(search_box.text);
+					//read_from_file(search_box.text);
+					set_title_and_text(filtered_notes_array[i]);
 				}
 				// todo: highlight matching words inside note
 				break;
@@ -196,6 +226,26 @@ private function search():void {
 		main_text_area.text = '';
 	}
 	query_length = query.length;
+}
+
+// takes full text and sets title with first line, text area with remaining text
+private function set_title_and_text(note:Object):void {
+	if (note.text != null) {
+		note_title.text = note.title;
+		var note_text:String ='';
+		if (note.text.split("\n").length > 1) {
+			note_text = note.text.slice((note.text.indexOf("\n") + 1));
+		}
+		if (note_text.indexOf("\n") == 0) {
+			note_text = note_text.slice((note_text.indexOf("\n") + 1));
+		}
+		main_text_area.text = note_text;
+		active_key = note.key;
+	}
+	else {
+		
+	}
+	word_count();
 }
 
 // this function runs on each item in the note_list array to check that if it matches the query
@@ -234,8 +284,9 @@ private function has_a_match(text:String, query_words:Array):Boolean {
 private function select_next_note():void {
 	if (note_list.selectedIndex != (note_list.dataProvider.length - 1)) {
 		note_list.selectedIndex += 1;
-		search_box.text = note_list.selectedItem;
-		read_from_file(search_box.text);
+		set_title_and_text(note_list.selectedItem);
+		search_box.text = note_list.selectedItem.title;
+		//read_from_file(search_box.text);
 	}
 	search_box.selectAll();
 }
@@ -243,8 +294,9 @@ private function select_next_note():void {
 private function select_previous_note():void {
 	if (note_list.selectedIndex != 0) {
 		note_list.selectedIndex -= 1;
-		search_box.text = note_list.selectedItem;
-		read_from_file(search_box.text);
+		set_title_and_text(note_list.selectedItem);
+		//read_from_file(search_box.text);
+		search_box.text = note_list.selectedItem.title;
 	}
 	search_box.selectAll();
 }
@@ -255,13 +307,58 @@ private function select_previous_note():void {
 private function activate_note_or_create_new():void {
 	// clear whatever's currently in the main text area in preparation for the new note
 	trace('activate_note_or_create_new');
-	main_text_area.text = '';
+	
 	active_title = search_box.text;
-	read_from_file(search_box.text);
-	main_text_area.setFocus();
+	//read_from_file(search_box.text);
 	if (note_list.selectedIndex == -1) {
-		note_list.selectedIndex = 0;	
+		// insert new note in db
+		var note:Object = new Object();
+		note.text = search_box.text;
+		trace(note.text);
+		note.key = 'newnote_' + generateRandomString(7);
+		var cur_date:String = current_date();
+		note.modify = cur_date;
+		trace(note.modify);
+		note.utc_time = convert_to_UTC(note.modify);
+		note.created = cur_date;
+		note.deleted = 0;
+		insert_new_note_in_db(note);
+		// upload note with title to Simplenote
+		var url:String = "https://simple-note.appspot.com/api/note?modify=" + note.modify + "&create=" + note.created;
+		update_array[url] = note.key;
+		var request:URLRequest = create_simplenote_request(url, note.text);
+		var url_loader:URLURLLoader = new URLURLLoader();
+		url_loader.addEventListener(Event.COMPLETE, new_note_pushed_to_simplenote);
+		url_loader.addEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS, url_handler_1)
+		url_loader.load(request);
+
+		//
+		note_list.selectedIndex = 0;
+		note_title.text = search_box.text;
+		main_text_area.text = '';
 	}
+	else {
+		trace('get in here');
+		//set_title_and_text(full_text_array[match_indexes[note_list.selectedIndex]]);
+	}
+	main_text_area.setFocus();
+}
+
+// need to add simplenote key to newly created note after the new note goes to Simplenote
+private function new_note_pushed_to_simplenote(e:Event):void {
+	var temp_key:String = update_array[e.target.urlRequest.url];
+	update_array[e.target.urlRequest.url] = '';
+	var key:String = e.target.data;
+	trace("Change note key from " + temp_key + " to " + key);
+	var temp_sqls:SQLStatement = new SQLStatement();
+	temp_sqls.sqlConnection = sqlc;
+	temp_sqls.text = "UPDATE notes SET key = '" + key + "' WHERE key = '" + temp_key + "';";
+	temp_sqls.execute();
+	var result:Array = temp_sqls.getResult().data;
+	if (note_list.selectedItem.key == temp_key) {
+		active_key = key;
+	}
+	refresh_notes();
 }
 
 // timer that saves the active note every 5 seconds if it's changed; ideally we'll set up a better method 
@@ -272,6 +369,7 @@ private var save_timer:Timer = new Timer(5000);
 
 // crude save function
 private function save(event:TimerEvent):void {
+	return; // disabling for now
 	if (last_save != main_text_area.text && note_title.text != '') {
 		var f:File = File.desktopDirectory.resolvePath("Notes/" + active_title + ".txt");
 		if (f.exists) {
@@ -280,6 +378,65 @@ private function save(event:TimerEvent):void {
 			last_save = main_text_area.text;
 		}
 	}
+}
+
+// saves the note locally, pushes save to Simplenote if network connection exists
+private function save_note():void {
+	var note:Object = note_list.selectedItem;
+	note.text = note_title.text + "\n\n" + main_text_area.text;
+	var modify:String = current_date();
+	note.modify = modify;
+	var utc_time:int = convert_to_UTC(note.modify);
+	trace("The formatted mod date is: " + note.modify);
+	var temp_sqls:SQLStatement = new SQLStatement();
+	temp_sqls.sqlConnection = sqlc;
+	temp_sqls.text = "UPDATE notes SET text = '" + escape(note.text) + "', unsynced_changes = '1', modify = '" + note.modify + "', utc_time = '" + utc_time + "' WHERE key = '" + note.key + "';";
+	temp_sqls.execute();
+	var result:Array = temp_sqls.getResult().data;
+	refresh_notes();
+	push_note(note);
+	/*
+	var text:String = note_title.text + "\n" + main_text_area.text;
+	var key:String = update_array[e.target.urlRequest.url]['Note-Key'];
+	var modify:String = update_array[e.target.urlRequest.url]['Note-Modifydate'];
+	var utc_time:int = convert_to_UTC(modify);
+	var created:String = update_array[e.target.urlRequest.url]['Note-Createdate'];
+	var deleted_string:String = update_array[e.target.urlRequest.url]['Note-Deleted'].toString().toLowerCase(); 
+	var deleted:int;
+	if (deleted_string == 'true') {
+		deleted = 1;
+	}
+	else {
+		deleted = 0;
+	}
+	//var headers:Array = e.responseHeaders;
+	trace("You're updating the note with: ");
+	trace(text);
+	var temp_sqls:SQLStatement = new SQLStatement();
+	temp_sqls.sqlConnection = sqlc;
+	temp_sqls.text = "UPDATE notes SET text = '" + text + "', modify = '" + modify + "', deleted = '" + deleted + "', utc_time = '" + utc_time + "' WHERE key = '" + key + "';";
+	temp_sqls.execute();
+	refresh_notes();
+*/
+}
+
+// get current date formatted for Simplenote
+private function current_date():String {
+	var date:Date = new Date();
+	var y:String, m:String, d:String, h:String, min:String, s:String;
+	y = date.getUTCFullYear().toString();
+	m = (date.getUTCMonth() + 1).toString();
+	if (m.length == 1) m = "0" + m;
+	d = date.getUTCDate().toString();
+	if (d.length == 1) d = "0" + d;
+	h = date.getUTCHours().toString();
+	if (h.length == 1) h = "0" + h;
+	min = date.getUTCMinutes().toString();
+	if (min.length == 1) min = "0" + min;
+	s = date.getUTCSeconds().toString();
+	if (s.length == 1) s = "0" + s;
+	var date_str:String = y + "-" + m + "-" + d + " " + h + ":" + min + ":" + s;
+	return date_str;
 }
 
 // this method is called when a file is written; it may display some sort of
@@ -389,6 +546,12 @@ private function setup():void {
 	stage.addEventListener(KeyboardEvent.KEY_DOWN, onKeyDown);
 	// scan file directory for notes
 	open_database();
+	// once database is open, first we need to display what we've got locally
+	refresh_notes();
+	// then we need to fetch index from Simplenote to see if anything needs updated
+	get_simplenote_index();
+
+	/* BELOW IS THE FILE-BASED METHOD; COMMENTING OUT WHILE I WORK ON THE SQLITE DATABASE METHOD
 	var directory:File = File.desktopDirectory.resolvePath("Notes/");
 	var file_list:Array = directory.getDirectoryListing();
 	trace (file_list);
@@ -418,18 +581,20 @@ private function setup():void {
 	rich_array = rich_list.toArray();
 	rich_array = rich_array.sortOn("sort_date", Array.DESCENDING);
 	title_array = [];
-	title_and_text_array = [];
+	full_text_array = [];
 	for (var k:uint = 0; k < rich_array.length; k++) {
 		title_array.push(rich_array[k].title); //+ rich_array[k].text);
-		title_and_text_array.push(rich_array[k].title + " " + rich_array[k].text);
+		full_text_array.push(rich_array[k].title + " " + rich_array[k].text);
 		trace (rich_array[k].title);
 	}
 	var convert_list:ArrayList = new ArrayList(title_array);
-	note_list.dataProvider = convert_list;
+	*/
+	//note_list.dataProvider = convert_list;
 	// rich_note_list.dataProvider = rich_list;
 	// set save timer
 	save_timer.addEventListener(TimerEvent.TIMER, save);
 	save_timer.start();
+	trace("Setup is complete");
 }
 	
 // KEYBOARD SHORTCUTS GO HERE
@@ -443,7 +608,8 @@ private function onKeyDown(event:KeyboardEvent):void
 	}
 	else if (kc == 83 && event.ctrlKey) {		// ctrl/cmd+s (Save)
 		event.preventDefault();
-		write_to_file(active_title, main_text_area.text);
+		//write_to_file(active_title, main_text_area.text);
+		save_note();
 	}
 	else if (event.ctrlKey && kc == 8) {			// ctrl/cmd+delete (Delete)
 		event.preventDefault();						// for some reason, preventDefault() doesn't work here, so implementing workaround in delete_note()
@@ -491,7 +657,7 @@ private var email:String = 'adam@lifehacker.com';
 // store a cookie that it will send on subsequent requests
 private function login_to_simplenote():void {
 	trace('logging in');
-	var request:URLRequest = create_simplenote_request("https://simple-note.appspot.com/api/login","email=adam@lifehacker.com&password=testpass"); 
+	var request:URLRequest = create_simplenote_request("https://simple-note.appspot.com/api/login","email=" + email + "&password=testpass"); 
 	request.manageCookies = true;
 	var urlLoader:URLLoader = new URLLoader();
 	urlLoader.dataFormat = "text";
@@ -513,7 +679,7 @@ private function create_new_note():void {
 	var urlLoader:URLLoader = new URLLoader();
 	urlLoader.dataFormat = "text";
 	urlLoader.addEventListener(Event.COMPLETE, add_note_to_db, false, 0, true);
-	urlLoader.addEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS, url_handler_1)
+	urlLoader.addEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS, url_handler_1);
 	urlLoader.load(request);
 }
 
@@ -551,30 +717,168 @@ private function sync_notes(e:Object):void {
 	// for these syncs, db can't be async opened, so closing and re-opening as synchronous
 	
 	trace('syncing notes');
-	trace(e.target.data);
-	var note_array:Array = (JSON.decode(e.target.data) as Array);
-	trace(note_array);
-	var obj:Object = note_array[0];
-	trace(obj.deleted + ' ' + obj.modify + ' ' + obj.key);
-	// loop through the array of notes
-	for (var i:uint; i < note_array.length; i++) {
-		// check to see if the note exists in the local database
-		// if not, retrieve note from simplenote and add to/update database
-		trace(note_array[i].key);
-		var temp_sqls:SQLStatement = new SQLStatement();
-		temp_sqls.sqlConnection = sqlc;
-		temp_sqls.text = "INSERT INTO notes (key, modify, title, text) VALUES('" + note_array[i].key + "', '" + note_array[i].modify + "', '" + note_array[i].title + "', '" + note_array[i].text + "');";
-		temp_sqls.execute();
-
-		// add_item_to_db(note_array[i].key, note_array[i].modify, note_array[i].title, '');
-		//create_record(note_array[i].key, note_array[i].modify, '', '');
-		// also check if the modified date is the same; if local modified date
-		// is more recent, sync update to simplenote; if simplenote modified date
-		// is more recent, pull latest from simplenote
+	if (e.target.data != "") {
+		var note_array:Array = (JSON.decode(e.target.data) as Array);
+		var obj:Object = note_array[0];
+		// loop through the array of notes
+		for (var i:uint; i < note_array.length; i++) {
+			// check to see if the note exists in the local database
+			// if not, retrieve note from simplenote and add to/update database
+			trace("Check if " + note_array[i].key + " exists");
+			var temp_sqls:SQLStatement = new SQLStatement();
+			temp_sqls.sqlConnection = sqlc;
+			temp_sqls.text = "SELECT key, modify FROM notes WHERE key = '" + note_array[i].key + "'";
+			temp_sqls.execute();
+			var note_data:Array = temp_sqls.getResult().data;
+			if (note_data == null) {
+				trace("Note doesn't exist; inserting new value");
+				var request:URLRequest = new URLRequest("https://simple-note.appspot.com/api/note?key=" + note_array[i].key);// + "&encode=base64"); 
+				var urlLoader:URLURLLoader = new URLURLLoader();
+				urlLoader.dataFormat = "text";
+				urlLoader.addEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS, note_update_status);
+				urlLoader.addEventListener(Event.COMPLETE, new_note_from_simplenote);
+				urlLoader.load(request);
+			}
+			else {
+				trace("Note already exists... check if modified");
+				if (note_data[0].modify == note_array[i].modify) {
+					trace('The note has not been modified');
+				}
+				else {
+					trace('The note has been modified, needs to update the note with key ' + note_data[0].key);
+					var request2:URLRequest = new URLRequest("https://simple-note.appspot.com/api/note?key=" + note_array[i].key);// + "&encode=base64"); 
+					var urlLoader2:URLURLLoader = new URLURLLoader();
+					urlLoader2.dataFormat = "text";
+					urlLoader2.addEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS, note_update_status);
+					urlLoader2.addEventListener(Event.COMPLETE, pull_note);
+					urlLoader2.load(request2);
+				}
+			}
+		} 
+		trace('Completed syncing notes');
 	}
-	show_all();
-	//create_db_table();
-	//create_record(note_array[0].key, note_array[0].modify, '', '');
+	// Once notes have finished syncing, need to update/display the updated index of notes
+}
+
+private function refresh_notes():void {
+	trace("Refresh notes...");
+	var temp_sqls:SQLStatement = new SQLStatement();
+	temp_sqls.sqlConnection = sqlc;
+	temp_sqls.text = "SELECT * FROM notes WHERE deleted = '0' ORDER BY utc_time DESC";
+	temp_sqls.execute();
+	db_array = temp_sqls.getResult().data;
+	if (db_array != null) {
+		var reactivate:int;
+		for (var i:uint; i < db_array.length; i++) {
+			db_array[i].text = unescape(db_array[i].text);
+			db_array[i].title = db_array[i].text.split("\n")[0];
+			if (db_array[i].key == active_key) {
+				reactivate = i;
+			}
+		}
+		//var convert_list:ArrayList = new ArrayList(title_array);
+		note_list.dataProvider = new ArrayList(db_array);
+		// will need to re-apply filter to this, but for now just try to select the currently active note
+		trace("Reactivating list item " + reactivate);
+		note_list.selectedIndex = -1;
+		note_list.selectedIndex = reactivate;
+	}
+}
+
+private function convert_to_UTC(date_str:String):int {
+	var y_m_d:Array = date_str.split("-");
+	var h_m_s:Array = y_m_d[2].split(" ")[1].split(":");
+	//trace(y_m_d[0] + " " + (parseInt(y_m_d[1]) - 1).toString() + " " + y_m_d[2].split(" ")[0] + " " + h_m_s[0] + " " + h_m_s[1] + " " + h_m_s[2].split(".")[0] + " " + h_m_s[2].split(".")[1].slice(0, 3));
+	var date:Date;
+	
+	// When notes are created on Simplenote, they timestamp to 6 decimal places. When you upload your own modify date, Simplenote discareds all fractions of a second
+	// hence this if/else statement
+	if (h_m_s[2].split(".").length > 1) {
+		date = new Date(y_m_d[0], (parseInt(y_m_d[1]) - 1).toString(), y_m_d[2].split(" ")[0], h_m_s[0], h_m_s[1], h_m_s[2].split(".")[0], h_m_s[2].split(".")[1].slice(0, 3));
+	}
+	else {
+		date = new Date(y_m_d[0], (parseInt(y_m_d[1]) - 1).toString(), y_m_d[2].split(" ")[0], h_m_s[0], h_m_s[1], h_m_s[2].split(".")[0]);
+	}
+	return date.getTime();
+}
+
+private var update_array:Array = new Array();
+private function note_update_status(e:HTTPStatusEvent):void {
+	trace(e.responseHeaders);
+	var response_headers:Array = new Array();
+	for (var i:uint; i < e.responseHeaders.length; i++) {
+		response_headers[e.responseHeaders[i].name] = e.responseHeaders[i].value;
+	}
+	trace(response_headers);
+	update_array[e.responseURL] = response_headers;
+}
+
+// 
+private function new_note_from_simplenote(e:Event):void {
+	var note:Object = parse_header_info(update_array[e.target.urlRequest.url]);
+	note.text = e.target.data;
+	//var headers:Array = e.responseHeaders;
+	trace("You're creating the note with: ");
+	trace(note.text);
+	insert_new_note_in_db(note);
+}
+
+// parses response headers from Simplenote into a note object
+// returns that note object
+private function parse_header_info(headers:Array):Object {
+	var note:Object = new Object();
+	note.key = headers['Note-Key'];
+	note.modify = headers['Note-Modifydate'];
+	//trace(modify);
+	note.utc_time = convert_to_UTC(note.modify);
+	note.created = headers['Note-Createdate'];
+	var deleted_string:String = headers['Note-Deleted'].toString().toLowerCase();
+	//var note.deleted;
+	if (deleted_string == 'true') {
+		note.deleted = 1;
+	}
+	else {
+		note.deleted = 0;
+	}
+	return note;
+}
+
+// this method inserts a new note in the db with key, text, modify, created, deleted, and utc_time set
+private function insert_new_note_in_db(note:Object):void {
+	var temp_sqls:SQLStatement = new SQLStatement();
+	temp_sqls.sqlConnection = sqlc;
+	temp_sqls.text = "INSERT INTO notes (key, text, modify, created, deleted, utc_time) VALUES('" + note.key + "', '" + escape(note.text) + "', '" + note.modify + "', '" + note.created + "', '" + note.deleted + "', '" + note.utc_time + "');";
+	temp_sqls.execute();
+	refresh_notes();
+}
+
+// update notes that already exist in the database with up-to-date content from Simplenote
+// too much code duplication between this and new_note_from_simplenote method above
+private function pull_note(e:Event):void {
+	var note:Object = parse_header_info(update_array[e.target.urlRequest.url]);
+	note.text = unescape(e.target.data);
+	trace("You're updating the note with: ");
+	trace(note.text);
+	var temp_sqls:SQLStatement = new SQLStatement();
+	temp_sqls.sqlConnection = sqlc;
+	temp_sqls.text = "UPDATE notes SET text = '" + escape(note.text) + "', modify = '" + note.modify + "', deleted = '" + note.deleted + "', utc_time = '" + note.utc_time + "' WHERE key = '" + note.key + "';";
+	temp_sqls.execute();
+	refresh_notes();
+}
+
+// pushes local note updates to Simplenote
+private function push_note(note:Object):void {
+					 
+	var url:String = "https://simple-note.appspot.com/api/note?key=" + note.key + "&modify=" + note.modify;
+	var request:URLRequest = create_simplenote_request(url, note.text);
+	var url_loader:URLLoader = new URLLoader();
+	url_loader.addEventListener(Event.COMPLETE, note_pushed);
+	url_loader.addEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS, url_handler_1)
+	url_loader.load(request);
+}
+
+private function note_pushed(e:Event):void {
+	trace("note response came back: " + e.target.data);
 }
 
 // constructs the request to simplenote and encodes data when necessary
@@ -612,29 +916,16 @@ private function open_database():void
 	// first we need to set the file class for our database (in this example test.db). If the Database doesn't exists it will be created when we open it.
 	var db:File = File.desktopDirectory.resolvePath("Notes/notes.db");
 	// after we set the file for our database we need to open it with our SQLConnection.
-	sqlc.openAsync(db);
+	sqlc.open(db);
+	sqls.sqlConnection = sqlc;
+	sqls.text = "CREATE TABLE IF NOT EXISTS notes ( id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT UNIQUE, text TEXT, modify TEXT, created TEXT, unsynced_changes INTEGER DEFAULT '0', deleted INTEGER DEFAULT '0', utc_time INTEGER );";
+	sqls.execute();
 	// we need to set some event listeners so we know if we get an sql error, when the database is fully opened and to know when we recive a resault from an sql statment. The last one is uset to read data out of database.
-	sqlc.addEventListener(SQLEvent.OPEN, db_opened);
-	sqlc.addEventListener(SQLErrorEvent.ERROR, error);
+	//sqlc.addEventListener(SQLEvent.OPEN, db_opened);
+	//sqlc.addEventListener(SQLErrorEvent.ERROR, error);
 	sqls.addEventListener(SQLErrorEvent.ERROR, error);
 	sqls.addEventListener(SQLEvent.RESULT, statement_result);
 	
-}
-
-private function db_opened(e:SQLEvent):void
-{
-	trace("database successfully opened");
-	// when the database is opened we need to link the SQLStatment to our SQLConnection, so that sql statments for the right database.
-	// if you don't set this connection you will get an error when you execute sql statment.
-	sqls.sqlConnection = sqlc;
-	// in property text of our SQLStatment we write our sql command. We can also combine sql statments in our text property so that more than one statment can be executed at a time.
-	// in this sql statment we create table in our database with name "test_table" with three columns (id, first_name and last_name). Id is an integer that is auto incremented when each item is added. First_name and last_name are columns in which we can store text
-	// If you want to know more about sql statments search the web.
-	sqls.text = "CREATE TABLE IF NOT EXISTS notes ( id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT, modify TEXT, title TEXT, text TEXT );";
-	// after we have connected sql statment to our sql connection and writen our sql commands we also need to execute our sql statment.
-	// nothing will change in database until we execute sql statment.
-	sqls.execute();
-	// after we load the database and create the table if it doesn't already exists, we call refresh method which i have created to populate our datagrid
 }
 
 // function to add item to our database
@@ -646,7 +937,7 @@ private function add_item_to_db(key:String, modify:String, title:String, text:St
 		setTimeout(add_item_to_db, 500, key, modify, title, text);
 	} 
 	else {
-		sqls.text = "INSERT INTO notes (key, modify, title, text) VALUES('" + key + "', '" + modify + "', '" + title + "', '" + text + "');";
+		sqls.text = "INSERT INTO notes (key, text, modify, created, deleted) VALUES('" + key + "', '" + modify + "', '" + escape(text) + "');";
 		sqls.execute();
 		//sqls.addEventListener(SQLEvent.RESULT, item_added);
 	}
@@ -665,7 +956,7 @@ private function statement_result(e:SQLEvent):void
 	trace('got a result');
 	trace(data);
 	//show_all();
-	trace('show all');
+	//trace('show all');
 	// we pass the array of objects to our data provider to fill the datagrid
 	//dp = new ArrayCollection(data);
 }
@@ -683,51 +974,9 @@ private function show_all():void {
 private function show_all_result(e:SQLEvent):void {
 	var data:Array = sqls_all.getResult().data;
 	trace('got a result');
-	trace(data.length);
+	//trace(data.length);
 }
 	
-// below not currently in use
-private function db_create_handler(event:SQLEvent):void {
-	var statement:SQLStatement = new SQLStatement();
-	statement.sqlConnection = sql_connection;
-	statement.text = "CREATE TABLE IF NOT EXISTS notes ( id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT, modify TEXT, title TEXT,	text TEXT);";
-	statement.execute();
-	var result:SQLResult = statement.getResult();
-	trace("Table created");
-	//sql_connection.close();
-	trace('db created');
-}
-
-
-private function create_db_table():void {
-	var statement:SQLStatement = new SQLStatement();
-	statement.sqlConnection = sql_connection;
-	//statement.text = "CREATE TABLE IF NOT EXISTS test_table ( id INTEGER PRIMARY KEY AUTOINCREMENT, first_name TEXT, last_name TEXT);";
-	statement.text = "CREATE TABLE IF NOT EXISTS notes ( id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT, modify TEXT, title TEXT,	text TEXT);";
-	//statement.addEventListener(SQLEvent.RESULT, sql_result);
-	statement.execute();
-	//var result:SQLResult = statement.getResult();
-	trace("Table created");
-	//sql_connection.close();
-	trace('db created');
-}
-
-
-private function db_open_handler(event:SQLEvent):void {
-	trace("Db is open for business");
-}
-
-private function create_record(key:String, modify:String, title:String, text:String):void {
-	var stmt:SQLStatement = new SQLStatement();
-	stmt.sqlConnection = sql_connection;
-	stmt.text = "INSERT INTO notes (" +
-		"key, modify, title, text) " +
-		"VALUES (" +
-		"'keyvalue', 'modifydate', 'title', 'text')";
-	stmt.execute();
-	var result:SQLResult = stmt.getResult();
-	trace("Data inserted");
-}
 
 private function retrieve_data():void {
 	var stmt:SQLStatement = new SQLStatement();;
@@ -755,4 +1004,16 @@ private function remove():void
 private function error(e:SQLErrorEvent):void
 {
 	Alert.show(e.toString());
+}
+
+// random string generator
+private function generateRandomString(strlen:Number):String{
+	var chars:String = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+	var num_chars:Number = chars.length - 1;
+	var randomChar:String = "";
+	
+	for (var i:Number = 0; i < strlen; i++){
+		randomChar += chars.charAt(Math.floor(Math.random() * num_chars));
+	}
+	return randomChar;
 }
