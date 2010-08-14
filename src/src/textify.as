@@ -17,6 +17,7 @@ import flash.net.URLLoader;
 import flash.net.URLRequest;
 import flash.utils.Timer;
 
+import mx.collections.ArrayCollection;
 import mx.collections.ArrayList;
 import mx.controls.Alert;
 import mx.controls.List;
@@ -27,15 +28,19 @@ import mx.utils.Base64Encoder;
 private var active_title:String = "";
 private var active_key:String = "";				// carries the unique Simplenote key of the active note (how will this work for notes not on Simplenote?)
 private var search_focus:Boolean = false;		// this boolean indicates whether search has focus
+private var main_text_area_focused:Boolean = false; // this boolean indicates whether the main text area has focus
 private var title_array:Array = new Array();	// this array contains only note titles
 private var full_text_array:Array = new Array(); 	// this contains only note title and text
 private var filtered_notes_array:Array = new Array(); 	// contains filtered versions of the title_array
 private var rich_array:Array = new Array(); 	// this array contains note title, text, and modified date
 private var db_array:Array = new Array();		// contains everything pulled from the database on any refresh_notes() SELECT
+//private var db_array_list:ArrayCollection = new ArrayCollection(); // mirrors db_array, but used for binding to List renderer
 private var match_indexes:Array = [];	// contains all the absolute indexes of the matched items in the filtered list set
 private var query_length:int = 0;				// 
 private var explicit_query:String = ''; 		// contains the text the user has explicitly typed into the search box rather than what's been autocompleted
 private var last_explicit_query:String = '';	// contains the previous query text; set from explicit_query
+private var char_buffer:Number = 0;				// contains the number of keystrokes in the main text area between last save
+private var manual_or_timed_save:Boolean;				// indicates whether a save was invoked manually by a user (true == user hit ctrl/cmd+s)
 		
 
 // this method writes text to a new file or updates a file
@@ -136,6 +141,7 @@ private function confirm_delete(event:CloseEvent):void {
 		var url_loader:URLLoader = new URLLoader();
 		url_loader.addEventListener(Event.COMPLETE, simplenote_marked_as_deleted);
 		url_loader.load(request);
+		clear_search();
 		refresh_notes();
 		/*
 		var file_name:String = search_box.text + ".txt"; 
@@ -144,7 +150,7 @@ private function confirm_delete(event:CloseEvent):void {
 			trace ("Exists... deleting");
 			file.deleteFile();
 			remove_note_from_array();
-			clear_search();
+			
 		}
 		*/
 	} 
@@ -195,7 +201,8 @@ private function search():void {
 			match_indexes.push(j);
 		}
 	}
-	note_list.dataProvider = new ArrayList(filtered_notes_array);
+	//note_list.dataProvider = new ArrayList(filtered_notes_array);
+	current_list = new ArrayList(filtered_notes_array);
 	// this block selects the first matching title name if the query
 	// string matches the beginning of the title; the loop breaks as soon
 	// as a match is found
@@ -203,7 +210,7 @@ private function search():void {
 		for (var i:uint = 0; i < filtered_notes_array.length; i++) {
 			if (filtered_notes_array[i].title.toString().toLowerCase().indexOf(query) == 0) {
 				note_list.selectedIndex = -1; // for some reason I have to set the index to -1 (nothing selected) or reselecting an already selected index will toggle its selection; annoying!
-				note_list.selectedIndex = i;	
+				note_list.selectedIndex = i;
 				search_box.text = search_box.text + note_list.selectedItem.title.substring(query.length);
 				active_title = search_box.text;
 				search_box.selectRange(query.length, search_box.text.length);
@@ -218,6 +225,9 @@ private function search():void {
 			else {
 				main_text_area.text = '';
 				note_title.text = '';
+				syncball.visible = false;
+				date_sticker.visible = false;
+				note_word_count.visible = false;
 			}
 		}		
 	}
@@ -230,9 +240,12 @@ private function search():void {
 
 // takes full text and sets title with first line, text area with remaining text
 private function set_title_and_text(note:Object):void {
-	if (note.text != null) {
+	if (note == null) {
+		return;
+	}
+	else if (note.text != null) {
+		var note_text:String;
 		note_title.text = note.title;
-		var note_text:String ='';
 		if (note.text.split("\n").length > 1) {
 			note_text = note.text.slice((note.text.indexOf("\n") + 1));
 		}
@@ -240,10 +253,13 @@ private function set_title_and_text(note:Object):void {
 			note_text = note_text.slice((note_text.indexOf("\n") + 1));
 		}
 		main_text_area.text = note_text;
+		search_focused();
+		last_save = note_text;
 		active_key = note.key;
-	}
-	else {
-		
+		date_sticker.date = string_to_date(note.modify);
+		date_sticker.visible = true;
+		syncball.visible = true;
+		note_word_count.visible = true;
 	}
 	word_count();
 }
@@ -286,6 +302,7 @@ private function select_next_note():void {
 		note_list.selectedIndex += 1;
 		set_title_and_text(note_list.selectedItem);
 		search_box.text = note_list.selectedItem.title;
+		note_list.ensureIndexIsVisible(note_list.selectedIndex);
 		//read_from_file(search_box.text);
 	}
 	search_box.selectAll();
@@ -297,6 +314,7 @@ private function select_previous_note():void {
 		set_title_and_text(note_list.selectedItem);
 		//read_from_file(search_box.text);
 		search_box.text = note_list.selectedItem.title;
+		note_list.ensureIndexIsVisible(note_list.selectedIndex);
 	}
 	search_box.selectAll();
 }
@@ -337,10 +355,6 @@ private function activate_note_or_create_new():void {
 		note_title.text = search_box.text;
 		main_text_area.text = '';
 	}
-	else {
-		trace('get in here');
-		//set_title_and_text(full_text_array[match_indexes[note_list.selectedIndex]]);
-	}
 	main_text_area.setFocus();
 }
 
@@ -364,37 +378,52 @@ private function new_note_pushed_to_simplenote(e:Event):void {
 // timer that saves the active note every 5 seconds if it's changed; ideally we'll set up a better method 
 // than a straight up timer for of regular saving
 private var last_save:String = '';
-private var save_timer:Timer = new Timer(5000);
-
-
-// crude save function
+private var save_timer:Timer = new Timer(1000);
+private var last_modified_date:Date = new Date();		// this is set in the keycode listener
+// crude auto-save function
 private function save(event:TimerEvent):void {
-	return; // disabling for now
-	if (last_save != main_text_area.text && note_title.text != '') {
-		var f:File = File.desktopDirectory.resolvePath("Notes/" + active_title + ".txt");
-		if (f.exists) {
-			trace("Saving via timer");
-			write_to_file(active_title, main_text_area.text); // this should prob be a lot more robust
-			last_save = main_text_area.text;
-		}
+	//return; // disabling for now
+	var date_now:Date = new Date();
+	var seconds_between:Number = (date_now.getTime() - last_modified_date.getTime())/1000;
+//	trace("Number of seconds between the two = " + seconds_between.toString());
+	if (seconds_between > 2 && last_save != main_text_area.text && note_title.text != '') {
+//	if (last_save != main_text_area.text && note_title.text != '') {
+		manual_or_timed_save = true;
+		save_note();
+		//var f:File = File.desktopDirectory.resolvePath("Notes/" + active_title + ".txt");
+		trace("Saving via timer");
+		//if (f.exists) {
+		//
+//			write_to_file(active_title, main_text_area.text); // this should prob be a lot more robust
+//			last_save = main_text_area.text;
+//		}
 	}
 }
 
 // saves the note locally, pushes save to Simplenote if network connection exists
 private function save_note():void {
+	trace("Saving note locally");
 	var note:Object = note_list.selectedItem;
 	note.text = note_title.text + "\n\n" + main_text_area.text;
+	last_save = main_text_area.text;
 	var modify:String = current_date();
 	note.modify = modify;
 	var utc_time:int = convert_to_UTC(note.modify);
-	trace("The formatted mod date is: " + note.modify);
 	var temp_sqls:SQLStatement = new SQLStatement();
 	temp_sqls.sqlConnection = sqlc;
 	temp_sqls.text = "UPDATE notes SET text = '" + escape(note.text) + "', unsynced_changes = '1', modify = '" + note.modify + "', utc_time = '" + utc_time + "' WHERE key = '" + note.key + "';";
 	temp_sqls.execute();
 	var result:Array = temp_sqls.getResult().data;
+	date_sticker.date = string_to_date(note.modify);
 	refresh_notes();
-	push_note(note);
+	search_box.text = last_explicit_query;
+	search();
+	search_box.text = note_title.text;
+	if (char_buffer > 200 || manual_or_timed_save == true) {
+		push_note(note);
+		char_buffer = 0;
+		manual_or_timed_save = false;
+	}
 	/*
 	var text:String = note_title.text + "\n" + main_text_area.text;
 	var key:String = update_array[e.target.urlRequest.url]['Note-Key'];
@@ -437,6 +466,13 @@ private function current_date():String {
 	if (s.length == 1) s = "0" + s;
 	var date_str:String = y + "-" + m + "-" + d + " " + h + ":" + min + ":" + s;
 	return date_str;
+}
+
+private function string_to_date(date_str:String):Date {
+	var y_m_d:Array = date_str.split("-");
+	var date:Date = new Date();
+	date = new Date(y_m_d[0], (parseInt(y_m_d[1]) - 1).toString(), y_m_d[2].split(" ")[0]);
+	return date;
 }
 
 // this method is called when a file is written; it may display some sort of
@@ -531,9 +567,13 @@ private function search_blurred():void {
 private function clear_search():void {
 	search_box.text = '';
 	search_box.setFocus();
+	search_focus = true;
 	// clear main_text_area
 	main_text_area.text = '';
 	note_title.text = '';
+	date_sticker.visible = false;
+	syncball.visible = false; 
+	note_word_count.visible = false;
 	search();
 }
 
@@ -595,6 +635,7 @@ private function setup():void {
 	save_timer.addEventListener(TimerEvent.TIMER, save);
 	save_timer.start();
 	trace("Setup is complete");
+	note_list.selectedIndex = -1;
 }
 	
 // KEYBOARD SHORTCUTS GO HERE
@@ -609,6 +650,7 @@ private function onKeyDown(event:KeyboardEvent):void
 	else if (kc == 83 && event.ctrlKey) {		// ctrl/cmd+s (Save)
 		event.preventDefault();
 		//write_to_file(active_title, main_text_area.text);
+		manual_or_timed_save = true;
 		save_note();
 	}
 	else if (event.ctrlKey && kc == 8) {			// ctrl/cmd+delete (Delete)
@@ -625,12 +667,13 @@ private function onKeyDown(event:KeyboardEvent):void
 		
 	}	
 	// impelent Cmd/Ctrl+Del to delete a note (with confirmation
-	else if (search_focus == true && !event.ctrlKey) {
-		if (kc == 40) {						// down arrow
+	else if (search_focus == true) {
+//	else if (getFocus().toString() == 'Textify0.WindowedApplicationSkin2.Group3.contentGroup.search_box.TextInputSkin67.textDisplay') {
+		if (kc == 40 || (event.commandKey && kc == 74) || (event.controlKey && kc == 74)) {						// down arrow or Cmd+j/Ctrl+j
 			event.preventDefault();
 			select_next_note();
 		}
-		else if (kc == 38) {				// up arrow
+		else if (kc == 38 || (event.commandKey && kc == 75) || (event.controlKey && kc == 75)) {				// up arrow or Ctrl+k/Cmd+k
 			event.preventDefault();
 			select_previous_note();					
 		}
@@ -645,19 +688,33 @@ private function onKeyDown(event:KeyboardEvent):void
 			}
 		}
 	}
+	var ignore_keycodes:Array = [33, 34, 35, 36, 37, 38, 39, 40];
+//	trace("key code match: " + ignore_keycodes.indexOf(kc));
+	if (main_text_area_focused = true && ignore_keycodes.indexOf(kc) == -1 && !event.ctrlKey && !event.commandKey) {
+		char_buffer += 1;
+		last_modified_date = new Date();
+		trace(char_buffer);
+		if (last_save != main_text_area.text && note_title.text != '') {
+			if ((char_buffer % 100) == 0) {
+				save_note();
+			}
+		}
+	}
 }
 
 
 ////// INTERACTING WITH SIMPLENOTE ///////
 // storing encrypted data: http://livedocs.adobe.com/flex/3/html/help.html?content=EncryptedLocalStore_1.html
 
-private var email:String = 'adam@lifehacker.com';
+// currently need to manually set the following two variables to your Simplenote credentials for testing 
+private var email:String = 'email@example.com';
+private var test_pass:String = 'testpass'
 
 // function for logging into Simplenote; on success, AIR will
 // store a cookie that it will send on subsequent requests
 private function login_to_simplenote():void {
 	trace('logging in');
-	var request:URLRequest = create_simplenote_request("https://simple-note.appspot.com/api/login","email=" + email + "&password=testpass"); 
+	var request:URLRequest = create_simplenote_request("https://simple-note.appspot.com/api/login","email=" + email + "&password=" + test_pass); 
 	request.manageCookies = true;
 	var urlLoader:URLLoader = new URLLoader();
 	urlLoader.dataFormat = "text";
@@ -777,7 +834,8 @@ private function refresh_notes():void {
 			}
 		}
 		//var convert_list:ArrayList = new ArrayList(title_array);
-		note_list.dataProvider = new ArrayList(db_array);
+		//note_list.dataProvider = new ArrayList(db_array);
+		current_list = new ArrayList(db_array);
 		// will need to re-apply filter to this, but for now just try to select the currently active note
 		trace("Reactivating list item " + reactivate);
 		note_list.selectedIndex = -1;
@@ -868,16 +926,24 @@ private function pull_note(e:Event):void {
 
 // pushes local note updates to Simplenote
 private function push_note(note:Object):void {
-					 
+	syncball.syncState = 'syncing';			 
 	var url:String = "https://simple-note.appspot.com/api/note?key=" + note.key + "&modify=" + note.modify;
 	var request:URLRequest = create_simplenote_request(url, note.text);
-	var url_loader:URLLoader = new URLLoader();
+	var url_loader:URLURLLoader = new URLURLLoader();
 	url_loader.addEventListener(Event.COMPLETE, note_pushed);
 	url_loader.addEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS, url_handler_1)
 	url_loader.load(request);
 }
 
 private function note_pushed(e:Event):void {
+	trace(e.target.urlRequest.url.split('key=')[1]);
+	if (e.target.urlRequest.url.split('key=')[1].split('&')[0] == e.target.data) {
+		trace('sync successful');
+		syncball.syncState = 'synced';
+	}
+	else {
+		trace('something went wrong when syncing');
+	}
 	trace("note response came back: " + e.target.data);
 }
 
@@ -1016,4 +1082,11 @@ private function generateRandomString(strlen:Number):String{
 		randomChar += chars.charAt(Math.floor(Math.random() * num_chars));
 	}
 	return randomChar;
+}
+
+
+// UI SPECIFIC METHODS, LIKE SMOOTH SCROLLING STUFF
+
+private function scroll_down():void {
+	note_list.selectedIndex = 2;
 }

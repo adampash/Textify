@@ -3,58 +3,70 @@
 <s:ItemRenderer xmlns:fx="http://ns.adobe.com/mxml/2009" 
 				xmlns:s="library://ns.adobe.com/flex/spark" 
 				xmlns:mx="library://ns.adobe.com/flex/mx" 
-				autoDrawBackground="false" height="85" width="385">
+				autoDrawBackground="false" height="60" width="220"
+				>
 	<fx:Script>
 		<![CDATA[
-			
+			import mx.collections.ArrayCollection;
+			[Bindable]
+			private var stripe_colors:ArrayCollection = new ArrayCollection(['white', 'black']);
 			override public function set data(value:Object):void 
 			{
 				super.data = value;
 				
 				if (value)
 				{
-					titleLbl.text = data.title;
-					contentLbl.text = data.text;
-					titleLbl.visible = true;
-					contentLbl.visible = true;
+					title.text = data.title;
+					if (data.text.split('\n').length > 1) {
+						var this_text:String = data.text.slice((data.text.indexOf('\n') + 1));
+						text.text = this_text;
+						
+					}
+					else {
+						text.text = '...';
+					}
+					title.visible = true;
+					text.visible = true;
 				}
 				else
 				{
-					titleLbl.text = "";
-					contentLbl.text = "";
-					titleLbl.visible = false;
-					contentLbl.visible = false;
+					title.text = "";
+					text.text = "";
+					title.visible = false;
+					text.visible = false;
 				}
+				
+				if ((itemIndex % 2) == 0) {
+//					trace('gray');
+//					stripe_colors = '#c8c8c8';
+//					var grey:int = parseInt('#c8c8c8');
+//					row_color.color = grey;
+				}
+				else {
+//					trace('white');
+//					stripe_colors = 'white';
+//					var white:int = parseInt('#ffffff');
+//					row_color.color = white;
+				}
+
 				
 			}
 		]]>
 	</fx:Script>
+
 	<s:states>
 		<s:State name="normal" />
 		<s:State name="hovered" />
 		<s:State name="selected" />
 	</s:states>
-	
-	<s:Rect left="0" right="0" top="0" bottom="0">
+	<s:Rect left="0" right="0" top="0" bottom="0" >
 		<s:fill>
-			<s:SolidColor color.selected="0x383c40" color.normal="0x23252a" color.hovered="0x383c40"
-						  alpha.selected="0.8" alpha.hovered="0.5" alpha.normal="0.8" />
+			
+			<s:SolidColor id="row_color" color.normal="#ffffff" color.selected="#ffc000"  color.hovered="#c8c8c8"
+						  />
 		</s:fill>
 	</s:Rect>
-	
-	<s:Label id="titleLbl" 
-			 x="15" y="15" 
-			 width="370" color="0xffffff"/>
-	
-	<s:Label id="contentLbl" 
-			 x="15" y="30" 
-			 width="370" height="30" 
-			 fontSize="11" color="0xeeeeee"  />
-		
-	<s:Line left="0" right="0" bottom="0" width="1">
-		<s:stroke>
-			<s:SolidColorStroke color="0x000000"/>
-		</s:stroke>
-	</s:Line>
-	
+
+	<s:Label id="title"  width="200" x="0" fontFamily="Helvetica Neue" fontSize="13" fontWeight="bold" y="0" paddingTop="10" paddingLeft="10" paddingRight="10" maxDisplayedLines="1"/>
+	<s:Label id="text" x="0" y="20" width="200" lineHeight="7" height="40" fontFamily="Helvetica Neue" fontSize="12" paddingBottom="10" paddingRight="10" paddingLeft="10" paddingTop="0" maxDisplayedLines="2"/>
 </s:ItemRenderer>
